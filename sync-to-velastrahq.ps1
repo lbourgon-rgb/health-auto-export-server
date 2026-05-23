@@ -31,6 +31,7 @@ $HAE_READ_TOKEN = $env:HAE_READ_TOKEN
 # Try API worker first, fall back to gateway if needed
 $VELASTRAHQ_API_URL = "https://velastrahq-api.lbourgon.workers.dev/api/health"
 $VELASTRAHQ_GW_URL  = "https://velastrahq-gw.lbourgon.workers.dev/api/health"
+$VELASTRAHQ_SUMMARY_URL = "https://velastrahq-api.lbourgon.workers.dev/api/vel/summary"
 $VELASTRAHQ_API_KEY = $env:VELASTRAHQ_API_KEY
 
 # Notion - Body Comp Metrics database
@@ -132,6 +133,133 @@ function Get-MetricDate($metric) {
         return ([datetime]$metric.date).ToString("yyyy-MM-dd")
     }
     return $null
+}
+
+function Get-VelPelvicFloorState {
+    try {
+        $summary = Invoke-RestMethod -Uri $VELASTRAHQ_SUMMARY_URL -TimeoutSec 15
+        $pelvic = $summary.bodyState.pelvicFloor
+        if (-not $pelvic) {
+            $pelvic = $summary.daily_context.bodyState.pelvicFloor
+        }
+        if (-not $pelvic -and $summary.uplink -and $summary.uplink.Count -gt 0) {
+            $pelvic = $summary.uplink[0].bodyState.pelvicFloor
+        }
+        return $pelvic
+    } catch {
+        Write-Host "  Warning: Could not fetch Vel pelvic floor state - $($_.Exception.Message)"
+    }
+    return $null
+}
+
+function Get-NotionDatabaseProperties {
+    param($Headers)
+
+    try {
+        $db = Invoke-RestMethod -Uri "https://api.notion.com/v1/databases/$NOTION_DB_ID" -Headers $Headers -TimeoutSec 15
+        return $db.properties
+    } catch {
+        Write-Host "  Warning: Could not fetch Notion database schema - $($_.Exception.Message)"
+    }
+    return $null
+}
+
+function Get-ExistingNotionPropertyName {
+    param(
+        $Schema,
+        [string[]]$Candidates
+    )
+
+    if (-not $Schema) { return $null }
+    foreach ($candidate in $Candidates) {
+        if ($Schema.PSObject.Properties.Name -contains $candidate) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+function Add-NotionValueIfPropertyExists {
+    param(
+        [System.Collections.IDictionary]$Properties,
+        $Schema,
+        [string[]]$Candidates,
+        $Value
+    )
+
+    if ($Value -eq $null) { return }
+
+    $propName = Get-ExistingNotionPropertyName -Schema $Schema -Candidates $Candidates
+    if (-not $propName) {
+        $label = $Candidates[0]
+        Write-Host "  Notion schema missing '$label'; skipping this pelvic field."
+        return
+    }
+
+    $propType = $Schema.$propName.type
+    switch ($propType) {
+        'number' {
+            $numberValue = 0.0
+            if ([double]::TryParse([string]$Value, [ref]$numberValue)) {
+                $Properties[$propName] = @{ number = $numberValue }
+            }
+        }
+        'select' {
+            $textValue = [string]$Value
+            if ($textValue.Trim()) {
+                $Properties[$propName] = @{ select = @{ name = $textValue.Trim() } }
+            }
+        }
+        'multi_select' {
+            $items = @($Value) | Where-Object { $_ -ne $null -and ([string]$_).Trim() } | ForEach-Object {
+                @{ name = ([string]$_).Trim() }
+            }
+            if ($items.Count -gt 0) {
+                $Properties[$propName] = @{ multi_select = $items }
+            }
+        }
+        'rich_text' {
+            $textValue = [string]$Value
+            if ($textValue.Trim()) {
+                $Properties[$propName] = @{ rich_text = @(@{ text = @{ content = $textValue.Trim() } }) }
+            }
+        }
+        default {
+            $textValue = [string]$Value
+            if ($textValue.Trim()) {
+                $Properties[$propName] = @{ rich_text = @(@{ text = @{ content = $textValue.Trim() } }) }
+            }
+        }
+    }
+}
+
+function Add-PelvicFloorNotionProperties {
+    param(
+        [System.Collections.IDictionary]$Properties,
+        $Schema,
+        $Pelvic
+    )
+
+    if (-not $Pelvic) {
+        Write-Host "  No Vel pelvic floor state found in summary payload."
+        return
+    }
+
+    $locations = @($Pelvic.primaryPainLocation) | Where-Object { $_ }
+    $compensations = @($Pelvic.compensationPattern) | Where-Object { $_ }
+    $notes = if ($Pelvic.notes) {
+        $text = [string]$Pelvic.notes
+        if ($text.Length -gt 500) { $text.Substring(0, 500) } else { $text }
+    } else {
+        $null
+    }
+
+    Add-NotionValueIfPropertyExists -Properties $Properties -Schema $Schema -Candidates @('Pelvic Floor Status', 'Pelvic Status') -Value $Pelvic.pelvicFloorStatus
+    Add-NotionValueIfPropertyExists -Properties $Properties -Schema $Schema -Candidates @('Glute Max Activation', 'Glute Activation') -Value $Pelvic.gluteMaxActivation
+    Add-NotionValueIfPropertyExists -Properties $Properties -Schema $Schema -Candidates @('Pelvic Pain Level', 'Pain Level') -Value $Pelvic.painLevel
+    Add-NotionValueIfPropertyExists -Properties $Properties -Schema $Schema -Candidates @('Pelvic Pain Locations', 'Primary Pain Location', 'Primary Pain Locations') -Value $locations
+    Add-NotionValueIfPropertyExists -Properties $Properties -Schema $Schema -Candidates @('Pelvic Compensation Pattern', 'Compensation Pattern') -Value $compensations
+    Add-NotionValueIfPropertyExists -Properties $Properties -Schema $Schema -Candidates @('Pelvic Notes', 'Notes') -Value $notes
 }
 
 function New-NotionProperties {
@@ -308,19 +436,34 @@ Write-Host "Pushing body comp to Notion ($bcDate)..."
 Write-Host "  Weight: $weightLbs lbs  |  Body Fat: $bfPct %  |  Lean: $leanLbs lbs  |  Protein: $proteinG g"
 Write-Host "  Source dates -> weight:$weightDate body-fat:$bodyFatDate lean:$leanDate protein:$proteinDate"
 
-$hasAnyBodyCompData = ($weightLbs -ne $null) -or ($bfPct -ne $null) -or ($leanLbs -ne $null) -or ($proteinG -ne $null)
-if (-not $hasAnyBodyCompData) {
-    Write-Host "NOTION SKIP: no body comp/protein values available for this run."
-    exit 0
-}
-
-$notionProps = New-NotionProperties -Date $bcDate -WeightLbs $weightLbs -BodyFatPct $bfPct -LeanLbs $leanLbs -ProteinG $proteinG
-
 $notionHeaders = @{
     "Authorization"  = "Bearer $NOTION_TOKEN"
     "Content-Type"   = "application/json"
     "Notion-Version" = "2022-06-28"
 }
+
+$velPelvicFloor = Get-VelPelvicFloorState
+$notionSchema = Get-NotionDatabaseProperties -Headers $notionHeaders
+if ($velPelvicFloor) {
+    Write-Host "  Pelvic floor: status='$($velPelvicFloor.pelvicFloorStatus)' glutes='$($velPelvicFloor.gluteMaxActivation)' pain=$($velPelvicFloor.painLevel)"
+}
+
+$hasAnyBodyCompData = ($weightLbs -ne $null) -or ($bfPct -ne $null) -or ($leanLbs -ne $null) -or ($proteinG -ne $null)
+$hasAnyPelvicData = $velPelvicFloor -and (
+    $velPelvicFloor.pelvicFloorStatus -or
+    $velPelvicFloor.gluteMaxActivation -or
+    $velPelvicFloor.notes -or
+    (@($velPelvicFloor.primaryPainLocation) | Where-Object { $_ }).Count -gt 0 -or
+    (@($velPelvicFloor.compensationPattern) | Where-Object { $_ }).Count -gt 0 -or
+    ([double]$velPelvicFloor.painLevel) -gt 0
+)
+if (-not $hasAnyBodyCompData -and -not $hasAnyPelvicData) {
+    Write-Host "NOTION SKIP: no body comp/protein or pelvic values available for this run."
+    exit 0
+}
+
+$notionProps = New-NotionProperties -Date $bcDate -WeightLbs $weightLbs -BodyFatPct $bfPct -LeanLbs $leanLbs -ProteinG $proteinG
+Add-PelvicFloorNotionProperties -Properties $notionProps -Schema $notionSchema -Pelvic $velPelvicFloor
 
 try {
     # Upsert: one row per day using the Date property.
