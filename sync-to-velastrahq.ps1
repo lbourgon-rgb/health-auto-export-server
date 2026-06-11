@@ -862,6 +862,19 @@ if ($DryRun) {
     }
 }
 
+# === Battery + crash flags (Vel's personal baselines) ===
+# Runs after the plain vitals push so its flags_json (battery, crash_state,
+# hrv_vs_baseline_pct) is what ends up on today's health entry.
+Write-Host ""
+Write-Host "Computing body battery + crash flags..."
+$dailySummaryScript = "C:\Users\Allen\Mini-pc-repo\velastra\tools\health-backfill\daily-summary.js"
+$dailySummaryArgs = @($dailySummaryScript)
+if ($DryRun) { $dailySummaryArgs += "--dry-run" }
+& node @dailySummaryArgs
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Battery summary failed (non-fatal; plain vitals were already pushed)."
+}
+
 # === Push Body Comp to Notion ===
 if (-not $NOTION_TOKEN) {
     Write-Host ""
