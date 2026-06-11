@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<HealthData locale="en_US">
+ <ExportDate value="2026-06-11 09:00:00 -0400"/>
+ <Record type="HKQuantityTypeIdentifierHeartRateVariabilitySDNN" sourceName="BackfillSmokeTest" unit="ms" creationDate="2020-01-02 08:00:00 -0400" startDate="2020-01-02 07:55:00 -0400" endDate="2020-01-02 07:55:00 -0400" value="42.5"/>
+ <Record type="HKQuantityTypeIdentifierHeartRateVariabilitySDNN" sourceName="BackfillSmokeTest" unit="ms" creationDate="2020-01-02 12:00:00 -0400" startDate="2020-01-02 11:55:00 -0400" endDate="2020-01-02 11:55:00 -0400" value="38.1"/>
+ <Record type="HKQuantityTypeIdentifierHeartRate" sourceName="BackfillSmokeTest" unit="count/min" startDate="2020-01-02 08:01:00 -0400" endDate="2020-01-02 08:01:00 -0400" value="72">
+  <MetadataEntry key="HKMetadataKeyHeartRateMotionContext" value="0"/>
+ </Record>
+ <Record type="HKQuantityTypeIdentifierRestingHeartRate" sourceName="BackfillSmokeTest" unit="count/min" startDate="2020-01-02 00:00:00 -0400" endDate="2020-01-02 23:59:59 -0400" value="61"/>
+ <Record type="HKQuantityTypeIdentifierStepCount" sourceName="BackfillSmokeTest" unit="count" startDate="2020-01-02 09:00:00 -0400" endDate="2020-01-02 09:10:00 -0400" value="512"/>
+ <Record type="HKQuantityTypeIdentifierOxygenSaturation" sourceName="BackfillSmokeTest" unit="%" startDate="2020-01-02 03:00:00 -0400" endDate="2020-01-02 03:00:00 -0400" value="0.97"/>
+ <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="BackfillSmokeTest" startDate="2020-01-01 23:10:00 -0400" endDate="2020-01-02 01:10:00 -0400" value="HKCategoryValueSleepAnalysisAsleepCore"/>
+ <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="BackfillSmokeTest" startDate="2020-01-02 01:10:00 -0400" endDate="2020-01-02 02:00:00 -0400" value="HKCategoryValueSleepAnalysisAsleepDeep"/>
+ <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="BackfillSmokeTest" startDate="2020-01-02 02:00:00 -0400" endDate="2020-01-02 02:45:00 -0400" value="HKCategoryValueSleepAnalysisAsleepREM"/>
+ <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="BackfillSmokeTest" startDate="2020-01-02 02:45:00 -0400" endDate="2020-01-02 02:55:00 -0400" value="HKCategoryValueSleepAnalysisAwake"/>
+ <Record type="HKQuantityTypeIdentifierDietaryWater" sourceName="BackfillSmokeTest" unit="mL" startDate="2020-01-02 10:00:00 -0400" endDate="2020-01-02 10:00:00 -0400" value="250"/>
+</HealthData>

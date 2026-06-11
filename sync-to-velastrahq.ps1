@@ -867,7 +867,7 @@ if ($DryRun) {
 # hrv_vs_baseline_pct) is what ends up on today's health entry.
 Write-Host ""
 Write-Host "Computing body battery + crash flags..."
-$dailySummaryScript = "C:\Users\Allen\Mini-pc-repo\velastra\tools\health-backfill\daily-summary.js"
+$dailySummaryScript = Join-Path $PSScriptRoot "tools\health-backfill\daily-summary.js"
 $dailySummaryArgs = @($dailySummaryScript)
 if ($DryRun) { $dailySummaryArgs += "--dry-run" }
 & node @dailySummaryArgs
