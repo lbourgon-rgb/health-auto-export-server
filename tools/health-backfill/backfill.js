@@ -36,8 +36,14 @@ const QUANTITY_TYPES = {
   HKQuantityTypeIdentifierStepCount: { metric: 'step_count', units: 'count' },
   HKQuantityTypeIdentifierRespiratoryRate: { metric: 'respiratory_rate', units: 'count/min' },
   HKQuantityTypeIdentifierActiveEnergyBurned: { metric: 'active_energy', units: 'kcal' },
+  HKQuantityTypeIdentifierBasalEnergyBurned: { metric: 'basal_energy_burned', units: 'kcal' },
   HKQuantityTypeIdentifierOxygenSaturation: { metric: 'blood_oxygen_saturation', units: '%', transform: (v) => v * 100 },
-  HKQuantityTypeIdentifierBodyMass: { metric: 'weight_body_mass', units: 'kg' },
+  HKQuantityTypeIdentifierBodyMass: { metric: 'weight_body_mass', units: 'kg', quantity: 'mass' },
+  HKQuantityTypeIdentifierLeanBodyMass: { metric: 'lean_body_mass', units: 'kg', quantity: 'mass' },
+  HKQuantityTypeIdentifierBodyFatPercentage: { metric: 'body_fat_percentage', units: '%', quantity: 'percent' },
+  HKQuantityTypeIdentifierBodyMassIndex: { metric: 'body_mass_index', units: 'count' },
+  HKQuantityTypeIdentifierHeight: { metric: 'height', units: 'cm', quantity: 'length' },
+  HKQuantityTypeIdentifierWaistCircumference: { metric: 'waist_circumference', units: 'cm', quantity: 'length' },
 };
 
 const SLEEP_TYPE = 'HKCategoryTypeIdentifierSleepAnalysis';
@@ -125,6 +131,46 @@ function decodeXmlEntities(s) {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;|&apos;/g, "'");
+}
+
+function normalizeQuantity(def, attrs, rawValue) {
+  let value = def.transform ? def.transform(rawValue) : rawValue;
+  const originalUnit = attrs.unit || def.units;
+  let units = def.units;
+
+  if (def.quantity === 'mass') {
+    if (originalUnit === 'lb') value *= 0.45359237;
+    else if (originalUnit === 'g') value /= 1000;
+    else if (originalUnit !== 'kg') {
+      throw new Error(`Unsupported mass unit for ${def.metric}: ${originalUnit}`);
+    }
+  } else if (def.quantity === 'length') {
+    if (originalUnit === 'm') value *= 100;
+    else if (originalUnit === 'in') value *= 2.54;
+    else if (originalUnit !== 'cm') {
+      throw new Error(`Unsupported length unit for ${def.metric}: ${originalUnit}`);
+    }
+  } else if (def.quantity === 'percent') {
+    if (originalUnit === 'count' && value <= 1) value *= 100;
+    else if (originalUnit !== '%' && originalUnit !== 'count') {
+      throw new Error(`Unsupported percent unit for ${def.metric}: ${originalUnit}`);
+    }
+  } else if (def.metric === 'active_energy' || def.metric === 'basal_energy_burned') {
+    if (originalUnit === 'Cal' || originalUnit === 'kcal') {
+      units = 'kcal';
+    } else if (originalUnit === 'kJ') {
+      value /= 4.184;
+    } else {
+      throw new Error(`Unsupported energy unit for ${def.metric}: ${originalUnit}`);
+    }
+  }
+
+  const metadata = {};
+  if (originalUnit !== units) {
+    metadata.originalUnit = originalUnit;
+    metadata.originalValue = String(rawValue);
+  }
+  return { value, units, metadata };
 }
 
 /**
@@ -258,19 +304,20 @@ async function main() {
     if (!date || Number.isNaN(value)) { skipped++; return; }
     if (args.from && date < args.from) return;
     if (args.to && date > args.to) return;
-    if (def.transform) value = def.transform(value);
+    const normalized = normalizeQuantity(def, attrs, value);
+    value = normalized.value;
 
     let buf = buffers.get(def.metric);
     if (!buf) {
-      buf = { units: def.units, points: [] };
+      buf = { units: normalized.units, points: [] };
       buffers.set(def.metric, buf);
     }
     const source = decodeXmlEntities(attrs.sourceName || 'Unknown');
     const iso = date.toISOString();
     if (def.shape === 'heart_rate') {
-      buf.points.push({ Min: value, Avg: value, Max: value, units: def.units, date: iso, source });
+      buf.points.push({ Min: value, Avg: value, Max: value, units: normalized.units, date: iso, source, metadata: normalized.metadata });
     } else {
-      buf.points.push({ qty: value, units: def.units, date: iso, source });
+      buf.points.push({ qty: value, units: normalized.units, date: iso, source, metadata: normalized.metadata });
     }
     trackRange(def.metric, iso);
     await flush(def.metric);

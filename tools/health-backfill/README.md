@@ -47,3 +47,31 @@ Notes:
   source per day rather than summing across sources, or steps double-count.
 - Sleep nights are keyed noon-to-noon, so a 23:00 start and a 02:00 segment land
   on the same night. In-bed-only rows (no actual sleep stages) are dropped.
+
+## Stability radar
+
+`stability-radar.js` is the no-surprises shoulder-tap layer. It reads recent HAE
+metrics, judges Vel against her own rolling baselines via `vel-battery-core.js`,
+and prepares a Discord webhook payload. It never sends by default.
+
+```powershell
+# Read local HAE and print a stability report + Discord payload preview.
+node tools\health-backfill\stability-radar.js
+
+# Synthetic/private fixture mode for smoke tests.
+node tools\health-backfill\stability-radar.js --fixture C:\path\to\fixture.json
+
+# Live Discord send requires both flags plus a webhook.
+node tools\health-backfill\stability-radar.js --allow-live --send-discord --discord-webhook $env:DISCORD_WEBHOOK_URL
+
+# Preferred Haven/Discord path: create a pending command in Discord Resonance.
+node tools\health-backfill\stability-radar.js --allow-live --trigger-resonance --resonance-url $env:DISCORD_RESONANCE_URL --resonance-token $env:DISCORD_RESONANCE_TOKEN --resonance-channel-id $env:DISCORD_RESONANCE_CHANNEL_ID
+```
+
+Guardrails:
+- `--send-discord` alone is not enough; dry-run remains enabled unless
+  `--allow-live` is also present.
+- `--trigger-resonance` follows the same rule. In dry-run it only prints the
+  `/trigger` payload for the Discord-Webhook worker.
+- The script writes no health data and does not modify Velastra.
+- Use `--json-out <path>` to save the evaluated state and Discord payload.
