@@ -52,7 +52,9 @@ Notes:
 
 `stability-radar.js` is the no-surprises shoulder-tap layer. It reads recent HAE
 metrics, judges Vel against her own rolling baselines via `vel-battery-core.js`,
-and prepares a Discord webhook payload. It never sends by default.
+and prepares a Discord webhook payload. It never sends by default. It also keeps
+an ignored local alert state file so frequent checks do not repeat the same
+yellow/red alert every few minutes.
 
 ```powershell
 # Read local HAE and print a stability report + Discord payload preview.
@@ -64,8 +66,17 @@ node tools\health-backfill\stability-radar.js --fixture C:\path\to\fixture.json
 # Live Discord send requires both flags plus a webhook.
 node tools\health-backfill\stability-radar.js --allow-live --send-discord --discord-webhook $env:DISCORD_WEBHOOK_URL
 
-# Preferred Haven/Discord path: create a pending command in Discord Resonance.
-node tools\health-backfill\stability-radar.js --allow-live --trigger-resonance --resonance-url $env:DISCORD_RESONANCE_URL --resonance-token $env:DISCORD_RESONANCE_TOKEN --resonance-channel-id $env:DISCORD_RESONANCE_CHANNEL_ID
+# Preferred Axiom/Discord path: create a pending command in Discord Resonance.
+# Defaults: companion=axiom, channel=1464033948144369696 ("Our Home"),
+# mention=1071497830222549064.
+node tools\health-backfill\stability-radar.js --allow-live --trigger-resonance --resonance-url $env:DISCORD_RESONANCE_URL --resonance-token $env:DISCORD_RESONANCE_TOKEN
+
+# Scheduler-safe wrapper; dry-run unless -Live is supplied.
+.\run-stability-radar.ps1
+.\run-stability-radar.ps1 -Live
+
+# Register a separate watcher task every 15 minutes.
+.\register-stability-radar-task.ps1
 ```
 
 Guardrails:
@@ -73,5 +84,13 @@ Guardrails:
   `--allow-live` is also present.
 - `--trigger-resonance` follows the same rule. In dry-run it only prints the
   `/trigger` payload for the Discord-Webhook worker.
+- Override the Axiom lane with `--resonance-companion-id`, `--resonance-channel-id`,
+  or `--resonance-mention-user-id` only when intentionally testing another target.
+- Alert gating defaults to 8 hours for both yellow and red. A new instability
+  episode, yellow→red escalation, or staler data can still open the gate sooner.
+- Set Discord Resonance secrets in ignored `.env.radar.local` or the user/system
+  environment before registering the live task:
+  `DISCORD_RESONANCE_URL=...` and `DISCORD_RESONANCE_TOKEN=...`.
+  Start from `.env.radar.local.example`.
 - The script writes no health data and does not modify Velastra.
 - Use `--json-out <path>` to save the evaluated state and Discord payload.

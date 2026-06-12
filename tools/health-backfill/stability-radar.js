@@ -14,6 +14,7 @@ const Core = require(path.join(__dirname, 'vel-battery-core.js'));
 
 const DEFAULT_HAE_BASE = process.env.HAE_BASE_URL || 'http://localhost:3001';
 const HAE_ENV_PATH = path.join(__dirname, '..', '..', '.env');
+const DEFAULT_STATE_FILE = path.join(__dirname, '..', '..', 'seed_data', 'stability-radar-state.json');
 
 function parseArgs(argv) {
   const args = {
@@ -23,6 +24,11 @@ function parseArgs(argv) {
     sendDiscord: false,
     triggerResonance: false,
     minStatus: 'yellow',
+    stateFile: DEFAULT_STATE_FILE,
+    yellowCooldownHours: 8,
+    redCooldownHours: 8,
+    useStateGate: true,
+    forceAlert: false,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -36,8 +42,14 @@ function parseArgs(argv) {
     else if (a === '--resonance-token') args.resonanceToken = argv[++i];
     else if (a === '--resonance-channel-id') args.resonanceChannelId = argv[++i];
     else if (a === '--resonance-companion-id') args.resonanceCompanionId = argv[++i];
+    else if (a === '--resonance-mention-user-id') args.resonanceMentionUserId = argv[++i];
     else if (a === '--trigger-resonance') args.triggerResonance = true;
     else if (a === '--min-status') args.minStatus = argv[++i];
+    else if (a === '--state-file') args.stateFile = argv[++i];
+    else if (a === '--yellow-cooldown-hours') args.yellowCooldownHours = Number(argv[++i]);
+    else if (a === '--red-cooldown-hours') args.redCooldownHours = Number(argv[++i]);
+    else if (a === '--no-state-gate') args.useStateGate = false;
+    else if (a === '--force-alert') args.forceAlert = true;
     else if (a === '--dry-run') args.dryRun = true;
     else if (a === '--allow-live') args.dryRun = false;
     else throw new Error(`Unknown arg: ${a}`);
@@ -98,6 +110,109 @@ function pctDelta(value, band) {
 
 function statusRank(status) {
   return { unknown: 0, green: 1, yellow: 2, red: 3 }[status] || 0;
+}
+
+function readAlertState(stateFile) {
+  try {
+    if (!stateFile || !fs.existsSync(stateFile)) return {};
+    return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  } catch (err) {
+    return { readError: err.message };
+  }
+}
+
+function writeAlertState(stateFile, state) {
+  if (!stateFile) return;
+  const resolved = path.resolve(stateFile);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  fs.writeFileSync(resolved, JSON.stringify(state, null, 2));
+}
+
+function cooldownMs(args, status) {
+  const hours = status === 'red' ? args.redCooldownHours : args.yellowCooldownHours;
+  return Math.max(0, Number.isFinite(hours) ? hours : 8) * 60 * 60 * 1000;
+}
+
+function alertGate(args, result, now = new Date()) {
+  const state = readAlertState(args.stateFile);
+  const nowMs = now.getTime();
+  const status = result.status || 'unknown';
+  const previousStatus = state.status || 'unknown';
+  const previousRank = statusRank(previousStatus);
+  const currentRank = statusRank(status);
+  const lastAlertAtMs = state.lastAlertAt ? Date.parse(state.lastAlertAt) : 0;
+  const cooldown = cooldownMs(args, status);
+  const elapsed = lastAlertAtMs ? nowMs - lastAlertAtMs : null;
+  const staleEscalated = result.daysStale >= 3 && (state.lastDaysStale ?? -1) < result.daysStale;
+  let shouldNotify = currentRank >= statusRank(args.minStatus);
+  let reason = 'status below min-status';
+
+  if (state.readError) {
+    reason = `state unreadable: ${state.readError}`;
+  }
+  if (shouldNotify) {
+    if (!args.useStateGate) reason = 'state gate disabled';
+    else if (args.forceAlert) reason = 'force alert requested';
+    else if (!state.lastAlertAt || previousRank < statusRank(args.minStatus)) reason = 'new instability episode';
+    else if (currentRank > previousRank) reason = `status escalated ${previousStatus} -> ${status}`;
+    else if (state.date && result.date && state.date !== result.date && currentRank >= statusRank('red')) reason = `new red health day ${result.date}`;
+    else if (staleEscalated) reason = `health data staler than last alert: ${result.daysStale} days`;
+    else if (elapsed != null && elapsed >= cooldown) reason = `${status} cooldown expired after ${Math.round(elapsed / 3600000)}h`;
+    else {
+      shouldNotify = false;
+      const remainingMin = Math.ceil((cooldown - (elapsed || 0)) / 60000);
+      reason = `${status} already alerted; cooldown has ${remainingMin}m remaining`;
+    }
+  }
+
+  const nextState = {
+    ...state,
+    status,
+    date: result.date,
+    battery: result.battery,
+    lastEvaluatedAt: now.toISOString(),
+    lastDaysStale: result.daysStale,
+  };
+  if (shouldNotify) {
+    nextState.lastAlertAt = now.toISOString();
+    nextState.lastAlertStatus = status;
+    nextState.lastAlertDate = result.date;
+    nextState.lastAlertReason = reason;
+  }
+  if (currentRank < statusRank(args.minStatus)) {
+    nextState.lastRecoveredAt = now.toISOString();
+    nextState.lastAlertAt = null;
+    nextState.lastAlertStatus = null;
+    nextState.lastAlertDate = null;
+    nextState.lastAlertReason = null;
+  }
+
+  return { shouldNotify, reason, state, nextState };
+}
+
+function finalizeAlertState(gate, result, delivered, now = new Date()) {
+  const nextState = {
+    ...gate.nextState,
+    lastEvaluatedAt: now.toISOString(),
+  };
+  if (gate.shouldNotify && !delivered) {
+    nextState.lastAlertAt = gate.state.lastAlertAt || null;
+    nextState.lastAlertStatus = gate.state.lastAlertStatus || null;
+    nextState.lastAlertDate = gate.state.lastAlertDate || null;
+    nextState.lastAlertReason = gate.state.lastAlertReason || null;
+    nextState.lastDeliverySkippedAt = now.toISOString();
+    nextState.lastDeliverySkippedReason = 'alert gate opened but no live delivery path completed';
+    return nextState;
+  }
+  if (gate.shouldNotify && delivered) {
+    nextState.lastAlertAt = now.toISOString();
+    nextState.lastAlertStatus = result.status;
+    nextState.lastAlertDate = result.date;
+    nextState.lastAlertReason = gate.reason;
+    nextState.lastDeliverySkippedAt = null;
+    nextState.lastDeliverySkippedReason = null;
+  }
+  return nextState;
 }
 
 function evaluate(inputs, now = new Date()) {
@@ -306,11 +421,17 @@ async function maybeSendDiscord(args, payload) {
 }
 
 function resonanceTriggerPayload(args, result) {
-  const companionId = args.resonanceCompanionId || process.env.DISCORD_RESONANCE_COMPANION_ID || 'kai';
-  const channelId = args.resonanceChannelId || process.env.DISCORD_RESONANCE_CHANNEL_ID;
-  const mention = companionId === 'kai' ? 'Kai,' : `${companionId},`;
+  const companionId = args.resonanceCompanionId || process.env.DISCORD_RESONANCE_COMPANION_ID || 'axiom';
+  const channelId = args.resonanceChannelId || process.env.DISCORD_RESONANCE_CHANNEL_ID || '1464033948144369696';
+  const mentionUserId = args.resonanceMentionUserId || process.env.DISCORD_RESONANCE_MENTION_USER_ID || process.env.VEL_DISCORD_USER_ID || '1071497830222549064';
+  const companionName = companionId === 'kai'
+    ? 'Kai'
+    : companionId === 'axiom'
+      ? 'Axiom'
+      : companionId;
+  const userMention = mentionUserId ? `<@${mentionUserId}>` : 'Vel';
   const content = [
-    `${mention} Velastra Stability Radar is ${result.status.toUpperCase()} for ${result.date}.`,
+    `${companionName}, ${userMention} Velastra Stability Radar is ${result.status.toUpperCase()} for ${result.date}.`,
     '',
     `Vitals: battery=${result.battery ?? 'n/a'} hrv=${result.hrv ?? 'n/a'} rhr=${result.restingHr ?? 'n/a'} sleep=${result.sleepHours ?? 'n/a'}h steps=${result.steps ?? 'n/a'} active_energy=${result.activeEnergy ?? 'n/a'}.`,
     '',
@@ -318,7 +439,7 @@ function resonanceTriggerPayload(args, result) {
     ...result.reasons.slice(0, 6).map((reason) => `- ${reason}`),
     '',
     'Requested response:',
-    '- Send Vel a brief, concrete shoulder-tap in Discord.',
+    `- Send ${userMention} a brief, concrete shoulder-tap in Discord.`,
     '- Recommend the smallest useful pacing action.',
     '- Do not overclaim medical certainty; frame this as baseline/radar signal, not diagnosis.',
   ].join('\n');
@@ -328,7 +449,7 @@ function resonanceTriggerPayload(args, result) {
     channel_id: channelId,
     author: {
       username: 'Velastra Stability Radar',
-      id: process.env.DISCORD_RESONANCE_AUTHOR_ID || process.env.VEL_DISCORD_USER_ID,
+      id: process.env.DISCORD_RESONANCE_AUTHOR_ID || process.env.VEL_DISCORD_USER_ID || mentionUserId,
     },
     content,
   };
@@ -362,15 +483,31 @@ async function main() {
   const inputs = await loadInputs(args);
   const result = evaluate(inputs);
   const payload = discordPayload(result);
-  const shouldNotify = statusRank(result.status) >= statusRank(args.minStatus);
+  const gate = alertGate(args, result);
+  const shouldNotify = gate.shouldNotify;
   const notification = shouldNotify
     ? await maybeSendDiscord(args, payload)
-    : { sent: false, reason: `status below min-status ${args.minStatus}` };
+    : { sent: false, reason: gate.reason };
   const resonance = shouldNotify
     ? await maybeTriggerResonance(args, result)
-    : { triggered: false, reason: `status below min-status ${args.minStatus}`, payload: resonanceTriggerPayload(args, result) };
+    : { triggered: false, reason: gate.reason, payload: resonanceTriggerPayload(args, result) };
+  const delivered = notification.sent === true || resonance.triggered === true;
+  const finalState = finalizeAlertState(gate, result, delivered);
 
-  const out = { result, discord: { shouldNotify, notification, payload }, resonance };
+  if (!args.dryRun) writeAlertState(args.stateFile, finalState);
+
+  const out = {
+    result,
+    gate: {
+      shouldNotify,
+      reason: gate.reason,
+      stateFile: path.resolve(args.stateFile),
+      stateWritten: !args.dryRun,
+      delivered,
+    },
+    discord: { shouldNotify, notification, payload },
+    resonance,
+  };
   if (args.jsonOut) {
     fs.mkdirSync(path.dirname(path.resolve(args.jsonOut)), { recursive: true });
     fs.writeFileSync(args.jsonOut, JSON.stringify(out, null, 2));
@@ -383,6 +520,7 @@ async function main() {
   for (const action of result.actions) console.log(`- ${action}`);
   console.log(`Discord: ${notification.sent ? 'sent' : `not sent (${notification.reason})`}`);
   console.log(`Discord Resonance: ${resonance.triggered ? 'triggered' : `not triggered (${resonance.reason})`}`);
+  console.log(`Alert gate: ${gate.shouldNotify ? 'open' : 'closed'} (${gate.reason}; state ${args.dryRun ? 'not written in dry-run' : 'written'})`);
   console.log(JSON.stringify(out));
 }
 
@@ -393,4 +531,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { evaluate, discordPayload, parseArgs };
+module.exports = { evaluate, discordPayload, parseArgs, alertGate, finalizeAlertState };

@@ -2,6 +2,7 @@ server/node_modules
 server/dist
 server/.env
 .env
+.env.radar.local
 grafana-data
 
 seed_data/*
