@@ -3,6 +3,7 @@ server/dist
 server/.env
 .env
 .env.radar.local
+.env.hrv.local
 grafana-data
 
 seed_data/*
