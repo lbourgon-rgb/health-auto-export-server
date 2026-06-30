@@ -67,8 +67,8 @@ function readToken() {
 
 async function fetchMetric(args, token, metric, fromKey, toKey, fields) {
   const url = new URL(`${args.haeBase}/api/metrics/${metric}`);
-  url.searchParams.set('from', fromKey);
-  url.searchParams.set('to', `${toKey}T23:59:59`);
+  url.searchParams.set('from', Core.localDayStartIso(fromKey));
+  url.searchParams.set('to', Core.localDayEndIso(toKey));
   if (fields) url.searchParams.set('include', fields);
   const res = await fetch(url, { headers: { 'api-key': token } });
   if (!res.ok) throw new Error(`HAE ${metric}: ${res.status}`);
